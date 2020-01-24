@@ -46,7 +46,7 @@ type SocketFilterSnooper struct {
 }
 
 // NewSocketFilterSnooper returns a new SocketFilterSnooper
-func NewSocketFilterSnooper(filter *bpflib.SocketFilter) (*SocketFilterSnooper, error) {
+func NewSocketFilterSnooper(procRoot string, filter *bpflib.SocketFilter) (*SocketFilterSnooper, error) {
 	cache := newReverseDNSCache(dnsCacheSize, dnsCacheTTL, dnsCacheExpirationPeriod)
 	snooper := &SocketFilterSnooper{
 		parser:      newDNSParser(),
@@ -55,7 +55,7 @@ func NewSocketFilterSnooper(filter *bpflib.SocketFilter) (*SocketFilterSnooper, 
 		exit:        make(chan struct{}),
 	}
 
-	if err := snooper.start(filter); err != nil {
+	if err := snooper.start(procRoot, filter); err != nil {
 		return nil, err
 	}
 
@@ -169,7 +169,7 @@ func (s *SocketFilterSnooper) pollStats() {
 	}
 }
 
-func (s *SocketFilterSnooper) start(filter *bpflib.SocketFilter) error {
+func (s *SocketFilterSnooper) start(procRoot string, filter *bpflib.SocketFilter) error {
 	setupErr := make(chan error)
 	s.wg.Add(1)
 	go func() {
@@ -178,7 +178,8 @@ func (s *SocketFilterSnooper) start(filter *bpflib.SocketFilter) error {
 		// Switch to root network namespace so we can snoop DNS traffic for all containers
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
-		rootNS, err := netns.GetFromPid(1)
+		path := procRoot + "/1/ns/net"
+		rootNS, err := netns.GetFromPath(path)
 		if err != nil {
 			setupErr <- err
 			return
