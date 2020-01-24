@@ -193,7 +193,7 @@ func (s *SocketFilterSnooper) start(procRoot string, filter *bpflib.SocketFilter
 		}
 
 		s.source = packetSrc
-		setupErr <- err
+		setupErr <- nil
 		s.pollPackets()
 	}()
 
