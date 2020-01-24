@@ -5,6 +5,7 @@ package ebpf
 import (
 	"fmt"
 	"reflect"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -14,6 +15,7 @@ import (
 	"github.com/DataDog/datadog-agent/pkg/util/log"
 	"github.com/google/gopacket/afpacket"
 	bpflib "github.com/iovisor/gobpf/elf"
+	"github.com/vishvananda/netns"
 )
 
 const (
@@ -45,26 +47,17 @@ type SocketFilterSnooper struct {
 
 // NewSocketFilterSnooper returns a new SocketFilterSnooper
 func NewSocketFilterSnooper(filter *bpflib.SocketFilter) (*SocketFilterSnooper, error) {
-	packetSrc, err := newPacketSource(filter)
-	if err != nil {
-		return nil, err
-	}
-
 	cache := newReverseDNSCache(dnsCacheSize, dnsCacheTTL, dnsCacheExpirationPeriod)
 	snooper := &SocketFilterSnooper{
-		source:      packetSrc,
 		parser:      newDNSParser(),
 		cache:       cache,
 		translation: new(translation),
 		exit:        make(chan struct{}),
 	}
 
-	// Start consuming packets
-	snooper.wg.Add(1)
-	go func() {
-		snooper.pollPackets()
-		snooper.wg.Done()
-	}()
+	if err := snooper.start(filter); err != nil {
+		return nil, err
+	}
 
 	// Start polling socket stats
 	snooper.wg.Add(1)
@@ -174,6 +167,36 @@ func (s *SocketFilterSnooper) pollStats() {
 			return
 		}
 	}
+}
+
+func (s *SocketFilterSnooper) start(filter *bpflib.SocketFilter) error {
+	setupErr := make(chan error)
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+
+		// Switch to root network namespace so we can snoop DNS traffic for all containers
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		rootNS, err := netns.GetFromPid(1)
+		if err != nil {
+			setupErr <- err
+			return
+		}
+		netns.Set(rootNS)
+
+		packetSrc, err := newPacketSource(filter)
+		if err != nil {
+			setupErr <- err
+			return
+		}
+
+		s.source = packetSrc
+		setupErr <- err
+		s.pollPackets()
+	}()
+
+	return <-setupErr
 }
 
 func (s *SocketFilterSnooper) getCachedTranslation() *translation {
